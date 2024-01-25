@@ -1,0 +1,505 @@
+---
+format:
+  html:
+    toc: true
+    code-tools: true
+    code-line-numbers: true
+    number-sections: true
+    mainfont: Georgia, serif
+    page-layout: article
+  pdf:  
+    geometry:
+    - left=3cm,top=2cm,bottom=2cm,right=3cm
+    number-sections: true
+    code-annotations: none
+editor: source
+---
+
+
+
+:::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse=false}
+```{r}
+#| label: imports
+library(bayesplot)
+library(cmdstanr)
+library(dplyr)
+library(ggplot2)
+library(ggdist) # for stat_dotsinterval
+library(posterior)
+library(brms)
+library(corrplot)
+library(Metrics)
+library(bayestestR)
+library(caret)
+# Globally specfiy cmdstan backend for brms
+options(brms.backend="cmdstanr")
+# Tell brms to cache results if possible
+options(brms.file_refit="on_change")
+
+# Set more readable themes with bigger font for plotting packages
+ggplot2::theme_set(theme_minimal(base_size = 14))
+bayesplot::bayesplot_theme_set(theme_minimal(base_size = 14))
+
+set.seed(123)
+data <- read.csv("frogs.csv")
+sampled_data <- data[sample(nrow(data), 10), ]
+head(data)
+sampled_data
+```
+:::
+::::
+#Analysis of the data set
+
+```{r}
+ggplot(data, aes(x = meanmin, y = meanmax, color = altitude)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +  # Add linear regression line
+  scale_color_viridis_c() +  # You can change the color scale if needed
+  labs(title = "Correlation between meanmin and meanmax with Altitude",
+       x = "meanmin",
+       y = "meanmax",
+       color = "Altitude") +
+  theme_minimal()
+
+```
+
+```{r}
+# Plot the absence of frogs as a function of meanmin and altitude
+ggplot(data, aes(x = meanmin, y = meanmax, color = pres.abs, size = pres.abs)) +
+  geom_point(alpha = 0.7) +
+  scale_color_viridis_c() +  # You can change the color scale if needed
+  scale_size_continuous(range = c(3, 10)) +
+  labs(title = "Absence of Frogs vs. meanmin and altitude",
+       x = "meanmin",
+       y = "meanmax",
+       size = "Pres.Abs") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(data, aes(x = altitude, y = avrain)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +  # Add linear regression line
+  scale_color_viridis_c() +  # You can change the color scale if needed
+
+  theme_minimal()
+
+```
+
+```{r}
+# Filter the data to include only the presence of frogs
+presence_data <- data[data$pres.abs == 1, ]
+
+# Plot the presence of frogs with respect to altitude and avrain
+ggplot(presence_data, aes(x = altitude, y = avrain)) +
+  geom_point(alpha = 0.7, color = "blue") +
+  labs(title = "Presence of Frogs vs. Altitude and Avrain",
+       x = "Altitude",
+       y = "Avrain") +
+  theme_minimal()
+
+
+
+ggplot(presence_data, aes(x = altitude, y = meanmin)) +
+  geom_point(alpha = 0.7, color = "blue") +
+  labs(title = "Presence of Frogs vs. Altitude and MeanMin",
+       x = "Altitude",
+       y = "MeanMin") +
+  theme_minimal() +
+  theme(axis.text = element_text(size = 12),  # Adjust the font size of axis labels
+        axis.title = element_text(size = 16),  # Adjust the font size of axis titles
+        plot.title = element_text(size = 18 ))#, face = "bold", family = "Arial"))  # Adjust the font size, face, and family of the plot title
+```
+
+```{r}
+ggplot(presence_data, aes(x = altitude, y = NoOfPools)) +
+  geom_point(alpha = 0.7, color = "blue") +
+  labs(title = "Presence of Frogs vs. Altitude and NoOfPools",
+       x = "Altitude",
+       y = "NoOfPools") +
+  theme_minimal()+
+  theme(axis.text = element_text(size = 12),  # Adjust the font size of axis labels
+        axis.title = element_text(size = 16),  # Adjust the font size of axis titles
+        plot.title = element_text(size = 18 ))
+```
+
+```{r}
+ggplot(presence_data, aes(x = meanmin, y = NoOfPools)) +
+  geom_point(alpha = 0.7, color = "blue") +
+  labs(title = "Presence of Frogs vs. MeanMin and NoOfPools",
+       x = "MeanMin",
+       y = "NoOfPools") +
+  theme_minimal()+
+  theme(axis.text = element_text(size = 12),  # Adjust the font size of axis labels
+        axis.title = element_text(size = 16),  # Adjust the font size of axis titles
+        plot.title = element_text(size = 18 ))
+```
+
+```{r}
+# Calculate correlations
+correlation_matrix <- cor(data)
+print(correlation_matrix)
+# Create a prettier plot of the correlation matrix
+corrplot(correlation_matrix, method = "circle", type = "full", tl.cex = 0.8)
+
+# Plot the correlations
+library(ggplot2)
+
+ggplot(data, aes(x = altitude, y = avrain, color = pres.abs)) +
+  geom_point(alpha = 0.7) +
+  labs(title = "Scatter Plot of pres.abs vs. Altitude and Avrain",
+       x = "Altitude",
+       y = "Avrain",
+       color = "pres.abs") +
+  theme_minimal()
+
+```
+
+
+# Forming bayesian regression models using Stan
+
+```{r}
+priors1 <- c(
+  prior(normal(0,10), coef = "avrain"),
+  prior(normal(0,10), coef = "NoOfPools"),
+  prior(normal(0,10), coef = "meanmax"),
+  prior(normal(0,10), coef = "meanmin"),
+  prior(normal(0,10), coef = "altitude")
+)
+
+
+fit1 <- brms::brm(
+  # This specifies the formula
+  pres.abs ~ altitude + avrain + NoOfPools + meanmin + meanmax,
+  # This specifies the dataset
+  data = data,
+  # This specifies the observation model family
+  family = "bernoulli",
+  # This passes the priors specified above to brms
+  prior = priors1,
+  # This causes brms to cache the results
+  file = "~/Documents/R/Project/fit1"
+)
+
+priors2 <- c(
+  prior(normal(0,10), coef = "NoOfPools"),
+  prior(normal(0,10), coef = "meanmin"),
+  prior(normal(0,10), coef = "altitude")
+)
+
+
+fit2 <- brms::brm(
+  # This specifies the formula
+  pres.abs ~ NoOfPools + meanmin + altitude,
+  # This specifies the dataset
+  data = data,
+  # This specifies the observation model family
+  family = bernoulli(link="logit"),
+  # This passes the priors specified above to brms
+  prior = priors2,
+  # This causes brms to cache the results
+  file = "~/Documents/R/Project/fit2"
+)
+
+priors3 <- c(
+  prior(normal(0,10), coef = "meanmin"),
+  prior(normal(0,10), coef = "altitude")
+)
+
+fit3 <- brms::brm(
+  # This specifies the formula
+  pres.abs ~  meanmin*altitude+ meanmin + altitude,
+  # This specifies the dataset
+  data = data,
+  # This specifies the observation model family
+  family = bernoulli(link="logit"),
+  # This passes the priors specified above to brms
+  prior = priors3,
+  # This causes brms to cache the results
+  file = "~/Documents/R/Project/fit3"
+)
+```
+
+
+# Posterior predictive checking and model analysis
+```{r}
+pp_check_fit1 <- brms::pp_check(fit1, "stat")
+traceplot_fit1 <- stanplot(fit1, type = "trace", prob= 0.95)
+
+pp_check_fit2 <- brms::pp_check(fit2,"stat")
+traceplot_fit2 <- stanplot(fit2, type = "trace")
+
+pp_check_fit3 <- brms::pp_check(fit3,"stat")
+traceplot_fit3 <- stanplot(fit3, type = "trace")
+```
+```{r}
+s1 <- summary(fit1)
+s2 <- summary(fit2)
+s3 <- summary(fit3)
+
+print(s1)
+print(s2)
+print(s3)
+
+
+r1 <- rhat(fit1)
+r2 <- rhat(fit2)
+r3 <- rhat(fit3)
+print(r1)
+print(r2)
+print(r3)
+
+mcse(fit1)
+mcse(fit2)
+mcse(fit3)
+```
+
+```{r}
+loo_fit1 <- loo(fit1)
+loo_fit2 <- loo(fit2)
+loo_fit3 <- loo(fit3)
+
+loo_compare(loo_fit1,loo_fit2,loo_fit3)
+```
+
+```{r}
+print(pp_check_fit1)
+print(pp_check_fit2)
+print(pp_check_fit3)
+
+```
+
+#Prior Sensitivity analysis
+```{r}
+new_priors1_new <- c(
+  prior(normal(0,100), coef = "avrain"),
+  prior(normal(0,100), coef = "NoOfPools"),
+  prior(normal(20,20), coef = "meanmax"),
+  prior(normal(0,20), coef = "meanmin"),
+  prior(normal(1000,1000), coef = "altitude")
+)
+
+
+fit_1_new_priors <- brms::brm(
+  # This specifies the formula
+  pres.abs ~ altitude + avrain + NoOfPools + meanmin + meanmax,
+  # This specifies the dataset
+  data = data,
+  # This specifies the observation model family
+  family = "bernoulli",
+  # This passes the new_priors specified above to brms
+  prior = new_priors1_new,
+  # This causes brms to cache the results
+  file = "~/Documents/R/Project/fit_1_new_priors"
+)
+
+new_priors2_new <- c(
+  prior(normal(0,100), coef = "NoOfPools"),
+  prior(normal(0,20), coef = "meanmin"),
+  prior(normal(1000,1000), coef = "altitude")
+)
+
+
+fit_2_new_priors <- brms::brm(
+  # This specifies the formula
+  pres.abs ~ NoOfPools + meanmin + altitude,
+  # This specifies the dataset
+  data = data,
+  # This specifies the observation model family
+  family = bernoulli(link="logit"),
+  # This passes the new_priors specified above to brms
+  prior = new_priors2_new,
+  # This causes brms to cache the results
+  file = "~/Documents/R/Project/fit_2_new_priors_new_prior"
+)
+
+new_priors3_new <- c(
+  prior(normal(0,20), coef = "meanmin"),
+  prior(normal(1000,1000), coef = "altitude")
+)
+
+fit_3_new_priors <- brms::brm(
+  # This specifies the formula
+  pres.abs ~  meanmin + altitude^2,
+  # This specifies the dataset
+  data = data,
+  # This specifies the observation model family
+  family = bernoulli(link="logit"),
+  # This passes the new_priors specified above to brms
+  prior = new_priors3_new,
+  # This causes brms to cache the results
+  file = "~/Documents/R/Project/fit_3_new_priors"
+)
+
+pp_check_fit_1_new_priors <- brms::pp_check(fit_1_new_priors, "stat")
+traceplot_fit_1_new_priors <- stanplot(fit_1_new_priors, type = "trace", prob= 0.95)
+
+pp_check_fit_2_new_priors <- brms::pp_check(fit_2_new_priors, "stat")
+traceplot_fit_2_new_priors <- stanplot(fit_2_new_priors, type = "trace")
+
+pp_check_fit_3_new_priors <- brms::pp_check(fit_3_new_priors, "stat")
+traceplot_fit_3_new_priors <- stanplot(fit_3_new_priors, type = "trace")
+```
+
+```{r}
+s1_new <- summary(fit_1_new_priors)
+s2_new <- summary(fit_2_new_priors)
+s3_new <- summary(fit_3_new_priors)
+
+print(s1_new)
+print(s2_new)
+print(s3_new)
+
+
+r1 <- rhat(fit_1_new_priors)
+r2_new <- rhat(fit_2_new_priors)
+r3_new <- rhat(fit_3_new_priors)
+print(r1)
+print(r2_new)
+print(r3_new)
+```
+```{r}
+loo_fit_1_new_priors <- loo(fit_1_new_priors)
+loo_fit_2_new_priors <- loo(fit_2_new_priors)
+loo_fit_3_new_priors <- loo(fit_3_new_priors)
+
+loo_compare(loo_fit_1_new_priors,loo_fit_2_new_priors,loo_fit_3_new_priors)
+```
+
+```{r}
+print(pp_check_fit_1_new_priors)
+print(pp_check_fit_2_new_priors)
+print(pp_check_fit_3_new_priors)
+print(traceplot_fit_1_new_priors)
+print(traceplot_fit_2_new_priors)
+print(traceplot_fit_3_new_priors)
+
+```
+
+
+
+
+```{r}
+stancode(fit1)
+```
+
+
+```{r}
+stancode(fit2)
+```
+
+```{r}
+stancode(fit3)
+```
+```{r}
+# Split the data into training (90%) and test (10%) sets
+setIndex <- createDataPartition(data$pres.abs, p = 0.9, list = FALSE)
+train_data <- data[setIndex, ]
+test_data <- data[-setIndex, ]
+
+
+priors1 <- c(
+  prior(normal(0,10), coef = "avrain"),
+  prior(normal(0,10), coef = "NoOfPools"),
+  prior(normal(0,10), coef = "meanmax"),
+  prior(normal(0,10), coef = "meanmin"),
+  prior(normal(0,10), coef = "altitude")
+)
+
+
+fit4 <- brms::brm(
+  # This specifies the formula
+  pres.abs ~ altitude + avrain + NoOfPools + meanmin + meanmax,
+  # This specifies the dataset
+  data = train_data,
+  # This specifies the observation model family
+  family = "bernoulli",
+  # This passes the priors specified above to brms
+  prior = priors1,
+  # This causes brms to cache the results
+  file = "~/Documents/R/Project/fit4"
+)
+
+priors2 <- c(
+  prior(normal(0,10), coef = "NoOfPools"),
+  prior(normal(0,10), coef = "meanmin"),
+  prior(normal(0,10), coef = "altitude")
+)
+
+
+fit5 <- brms::brm(
+  # This specifies the formula
+  pres.abs ~ NoOfPools + meanmin + altitude,
+  # This specifies the dataset
+  data = train_data,
+  # This specifies the observation model family
+  family = bernoulli(link="logit"),
+  # This passes the priors specified above to brms
+  prior = priors2,
+  # This causes brms to cache the results
+  file = "~/Documents/R/Project/fit5"
+)
+
+priors3 <- c(
+  prior(normal(0,10), coef = "meanmin"),
+  prior(normal(0,10), coef = "altitude")
+)
+
+fit6 <- brms::brm(
+  # This specifies the formula
+  pres.abs ~  meanmin*altitude+ meanmin + altitude,
+  # This specifies the dataset
+  data = train_data,
+  # This specifies the observation model family
+  family = bernoulli(link="logit"),
+  # This passes the priors specified above to brms
+  prior = priors3,
+  # This causes brms to cache the results
+  file = "~/Documents/R/Project/fit6"
+)
+
+```
+
+
+```{r}
+# Make predictions on the test set
+predictions4 <- predict(fit4, newdata = test_data, type = "response")
+
+# Convert probabilities to class labels (0 or 1)
+predicted_classes4 <- ifelse(predictions4[,1] > 0.5, 1, 0)
+# Calculate accuracy
+accuracy4 <- sum(predicted_classes4 == test_data$pres.abs) / length(test_data$pres.abs)
+
+# Print the accuracy
+print(paste("Classification Accuracy on Test Set: ", round(accuracy4 * 100, 2), "%"))
+```
+
+```{r}
+# Make predictions on the test set
+predictions5 <- predict(fit5, newdata = test_data, type = "response")
+# Convert probabilities to class labels (0 or 1)
+predicted_classes5 <- ifelse(predictions5[,1] > 0.5, 1, 0)
+
+# Calculate accuracy
+accuracy5 <- sum(predicted_classes5 == test_data$pres.abs) / length(test_data$pres.abs)
+# Print the accuracy
+print(paste("Classification Accuracy on Test Set: ", round(accuracy5 * 100, 2), "%"))
+```
+
+
+```{r}
+# Make predictions on the test set
+predictions6 <- predict(fit6, newdata = test_data, type = "response")
+
+# Convert probabilities to class labels (0 or 1)
+predicted_classes6 <- ifelse(predictions6[,1] > 0.5, 1, 0)
+
+
+# Calculate accuracy
+accuracy6 <- sum(predicted_classes6 == test_data$pres.abs) / length(test_data$pres.abs)
+
+# Print the accuracy
+print(paste("Classification Accuracy on Test Set: ", round(accuracy6 * 100, 2), "%"))
+```
+
